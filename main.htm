@@ -51,6 +51,7 @@ H:<input id=pch type=number min=10 value=600 oninput='changeSize()'>
 <canvas></canvas><br>
 <button onclick='selectImage()'>Select image</button>
 <button onclick='useImage()'>Use image</button>
+<button onclick='processFolder()'>Process folder</button>
 </div>
 <div id=webcam>
 <video autoplay></video>
@@ -148,7 +149,127 @@ function tabImage(){
 }
 tabImage()
 
+
+// -----------------------------------------------------------------------
+// ---------------------- FOLDER PROCESSING ------------------------------
+// -----------------------------------------------------------------------
+
+function save(directoryHandle, fileName){
+  const svgString = '<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'
+    + (new XMLSerializer()).serializeToString(svg);
+  const blob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+  
+  writeBlobToDirectory(directoryHandle, fileName, blob) 
+
+}
+
+async function writeBlobToDirectory(directoryHandle, fileName, blob) {
+    try {
+        // Get a file handle inside the directory
+        const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+
+        // Create a writable stream and write the blob
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+
+        console.log(`File saved: ${fileName}`);
+    } catch (error) {
+        console.error("Error writing file:", error);
+    }
+}
+
+
+function selectFolderImage(file) {
+	console.log("[*] selectFolderImage")
+	// Create an Image object
+	img = new Image();
+	const imageUrl = URL.createObjectURL(file);
+	img.onload=async function(){
+			  console.log("[*] img.onload "+file.name)
+			  let w=img.width, h=img.height;
+
+			  cw=parseInt(pcw.defaultValue) // reset size - worth it?
+
+			  if (w>cw || h>ch) { ch=Math.round(cw*h/w) }
+			  else if (w>10&&h>10){ch=h;cw=w}
+			  preview.height = pch.value = ch 
+			  preview.width = pcw.value = cw
+
+			  scale = Math.min(ch/h, cw/w)
+			  offset = [ cw/2, ch/2 ]
+			  draw()
+			  useImageFolder()
+	}
+	img.src = imageUrl;
+}
+
+function useImageFolder(){
+  console.log("[*] useImageFolder")
+  if (!img) return
+  imageset=true;
+  [canvas.width, canvas.height] = [cw, ch];
+  ctx.fillStyle='#fff'
+  ctx.fillRect(0,0,cw,ch)
+  ctx.drawImage(preview, 0,0)
+  checkScroll()
+  process()
+}
+
+outDirectoryHandle=null
+outFilename=null
+
+async function processFolder() {
+    try {
+		// Request directory access
+        const dirHandle = await window.showDirectoryPicker();
+		// output directiry
+		outDirectoryHandle = await dirHandle.getDirectoryHandle('output', {
+				create: true,
+		});
+        const images = [];
+        // Iterate over files in the directory
+        for await (const entry of dirHandle.values()) {
+			
+            if (entry.kind === "file") {
+                const file = await entry.getFile();
+				outFilename = file.name.replace(/\.[^/.]+$/, "")+".svg"
+                // Check if the file is an image
+                if (file.type.startsWith("image/")) {
+					
+					console.log("Process image:", file.name);
+					// -------------------------------------
+					// ---- Select and process 1 image -----
+					// -------------------------------------
+					console.log("Select Folder image");
+					selectFolderImage(file)
+                }
+            }
+			
+			
+        }
+		
+        //return 
+    } catch (error) {
+        console.error("Error loading images:", error);
+        //return [];
+    }
+}
+
+
+
+
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+
+
+
 function selectImage(){
+	// Reset directory states
+	outDirectoryHandle=null
+	outFilename=null
+
   let d= document.createElement('input')
   d.type='file'
   d.onchange=function(e){
@@ -242,12 +363,19 @@ function sendToWorker(msg){
   else setTimeout(()=>window.onmessage({data:msg}),10)
 }
 function process(){
+  console.log("[*] process")
   if (!imageset) return;
   [config.width, config.height] = [canvas.width, canvas.height]
+  console.log("process : resetSVG")
   resetSVG()
+  console.log("process : loadWorker")
   loadWorker(window.algo)
+  console.log("process : sendWorker")
+
   sendToWorker([ window.config, ctx.getImageData(0,0,config.width,config.height) ]);
+  
 }
+
 function ctrlChange(control){
   if (!imageset) return;
   if (!control.noRestart) 
@@ -322,7 +450,7 @@ function loadWorker(src){
   buffering.style.visibility='visible'
   if (window.myWorker) myWorker.terminate()
 
-  if (window.location.protocol == 'file:') {
+  if ((window.location.protocol == 'file:') ){
     // Workers not working - fall back to embedding the script
     window.myWorker={terminate:()=>{}}
     window.importScripts=function(...args){
@@ -334,6 +462,10 @@ function loadWorker(src){
     appendScript(src)
 
   } else window.myWorker = new Worker(src);
+  
+  // Directory : set the output directory and output filename
+  myWorker.outdir=outDirectoryHandle
+  myWorker.outfile=outFilename
 
   msgbox.innerHTML = "";
 
@@ -359,8 +491,12 @@ function loadWorker(src){
 
     // vector data result
     }else if (type == 'svg-path'){
-      mainpath.setAttributeNS(null, "d", data) 
+      mainpath.setAttributeNS(null, "d", data)
+	  if(this.outdir){
+		save(this.outdir, this.outfile)
+	  }
     } 
+
   }
 }
 
